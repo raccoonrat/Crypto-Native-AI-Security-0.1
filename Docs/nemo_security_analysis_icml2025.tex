@@ -1,0 +1,363 @@
+%%%%%%%% ICML 2025 LATEX SUBMISSION FILE %%%%%%%%%%%%%%%%%
+
+\documentclass{article}
+
+% Recommended, but optional, packages for figures and better typesetting:
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{booktabs} % for professional tables
+
+% hyperref makes hyperlinks in the resulting PDF.
+% If your build breaks (sometimes temporarily if a hyperlink spans a page)
+% please comment out the following usepackage line and replace
+% \usepackage{icml2025} with \usepackage[nohyperref]{icml2025} above.
+\usepackage{hyperref}
+
+% Attempt to make hyperref and algorithmic work together better:
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+% Use the following line for the initial blind version submitted for review:
+\usepackage{icml2025}
+
+% If accepted, instead use the following line for the camera-ready submission:
+% \usepackage[accepted]{icml2025}
+
+% For theorems and such
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+% if you use cleveref..
+\usepackage[capitalize,noabbrev]{cleveref}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% The \icmltitle you define below is probably too long as a header.
+% Therefore, a short form for the running title is supplied here:
+\icmltitlerunning{Deep Security Analysis of NVIDIA NeMo Ecosystem}
+
+\begin{document}
+
+\twocolumn[
+\icmltitle{Deep Security Analysis of NVIDIA NeMo Ecosystem: \\
+           From Probabilistic Generation to Deterministic Control}
+
+% It is OKAY to include author information, even for blind
+% submissions: the style file will automatically remove it for you
+% unless you've provided the [accepted] option to the icml2025
+% package.
+
+% List of affiliations: The first argument should be a (short)
+% identifier you will use later to specify author affiliations
+% Academic affiliations should list Department, University, City, Region, Country
+% Industry affiliations should list Company, City, Region, Country
+
+% You can specify symbols, otherwise they are numbered in order.
+% Ideally, you should not use this facility. Affiliations will be numbered
+% in order of appearance and this is the preferred way.
+
+\begin{icmlauthorlist}
+\icmlauthor{Anonymous Author}{aff1}
+\end{icmlauthorlist}
+
+\icmlaffiliation{aff1}{Anonymous Institution}
+
+% You may provide any keywords that you
+% find helpful for describing your paper; these are used to populate
+% the "keywords" metadata in the PDF but will not be shown in the document
+\icmlkeywords{AI Security, LLM Guardrails, NeMo, Colang, NIM, RAG Security}
+
+\vskip 0.3in
+]
+
+% this must go after the closing bracket ] following \twocolumn[ ...
+
+% This command actually creates the footnote in the first column
+% listing the affiliations and the copyright notice.
+\printAffiliationsAndNotice{}
+
+\begin{abstract}
+In the era of large-scale enterprise deployment of generative AI systems, the fundamental challenge for security architects is no longer merely the inference capability of foundation models, but rather how to construct a deterministic control layer atop an inherently probabilistic system. Large Language Models (LLMs), as stochastic parrots, exhibit unpredictable outputs that fundamentally conflict with enterprise requirements for compliance, security, and rigorous business logic. This paper presents a comprehensive security analysis of the NVIDIA NeMo ecosystem, with particular focus on NeMo Guardrails, the Colang modeling language, and NVIDIA Inference Microservices (NIM) integration architecture. Our analysis demonstrates that the NeMo ecosystem represents the most mature attempt in the industry for "programmable dialog management," introducing an event-driven state machine runtime that transforms unstructured natural language interactions into structured, executable flows through Colang. This architectural design enables security policies to be dynamic, context-aware interaction logic rather than static rule lists. We argue that NeMo Guardrails effectively establishes a deterministic bridge between infinite natural language expressions and finite security policies through canonical forms, enables asynchronous parallel defense through Colang 2.0's concurrent runtime, and provides zero-trust infrastructure through NIM's containerized security mechanisms. Our evaluation covers five categories of guardrails (input, dialog, retrieval, execution, and output), advanced RAG security mechanisms, data curation with NeMo Curator, and performance optimization strategies to minimize the "latency tax" of security enforcement.
+\end{abstract}
+
+\section{Introduction}
+
+The deployment of Large Language Models (LLMs) in enterprise environments presents a unique security challenge: how to enforce deterministic security policies on systems that are fundamentally probabilistic. Traditional security mechanisms, designed for deterministic systems, are insufficient for LLM-based applications where outputs are generated stochastically and can vary significantly across identical inputs.
+
+NVIDIA NeMo represents a comprehensive ecosystem addressing this challenge through a multi-layered security architecture. At its core, NeMo Guardrails provides a programmable framework for enforcing security policies through an event-driven runtime, while Colang serves as a domain-specific language for expressing security logic. The integration with NVIDIA Inference Microservices (NIM) ensures infrastructure-level security through containerized, signed model deployments.
+
+This paper makes the following contributions:
+\begin{itemize}
+\item We provide the first comprehensive security analysis of the NVIDIA NeMo ecosystem, examining its architecture from both theoretical and practical perspectives.
+\item We analyze the evolution from Colang 1.0 to 2.0, demonstrating how asynchronous concurrency addresses performance bottlenecks in multi-modal security detection.
+\item We evaluate the effectiveness of canonical forms as a mechanism for bridging infinite natural language expressions to finite security policies.
+\item We present a detailed analysis of the five-category guardrail system and its application in enterprise scenarios.
+\item We examine RAG security mechanisms, data curation strategies, and performance optimization techniques specific to LLM guardrails.
+\end{itemize}
+
+\section{Background and Related Work}
+
+\subsection{LLM Security Challenges}
+
+The security challenges of LLM deployment have been extensively documented. Prompt injection attacks \cite{goodside2021prompt} exploit the model's inability to distinguish between user instructions and system instructions. Jailbreaking techniques \cite{wei2023jailbroken} attempt to bypass safety filters through adversarial prompting. Hallucination \cite{ji2023survey} introduces factual errors that can lead to misinformation or compliance violations.
+
+Traditional approaches to LLM security have relied primarily on prompt engineering \cite{white2023prompt} or post-hoc filtering. However, these methods suffer from limited expressiveness and high false positive rates. More sophisticated approaches include fine-tuning models for safety \cite{ouyang2022training} and reinforcement learning from human feedback (RLHF) \cite{stiennon2020learning}, but these require extensive training data and may reduce model capabilities.
+
+\subsection{Programmable Dialog Management}
+
+The concept of programmable dialog management has emerged as a promising direction for LLM security. Unlike static rule-based systems, programmable frameworks allow security policies to be expressed as executable code that can adapt to context. NeMo Guardrails represents a significant advancement in this direction, providing a domain-specific language (Colang) for expressing security logic.
+
+\section{NeMo Guardrails Architecture}
+
+\subsection{Event-Driven Defense Layer}
+
+NeMo Guardrails operates as an event-driven conversation manager, fundamentally different from traditional Web Application Firewalls (WAFs). While WAFs operate at the network or application layer, Guardrails operates at the semantic level, auditing and intervening in every state transition during interactions.
+
+The core of the Guardrails runtime is an event loop that continuously processes events and generates new events. This design enables the system to handle complex conversational scenarios in a non-linear manner. The processing flow can be decomposed into three critical control stages, each constituting part of a defense-in-depth strategy.
+
+\subsubsection{Stage 1: User Intent Canonicalization}
+
+The first principle in security for handling unstructured data is normalization. User utterances contain variants, noise, and potentially adversarial perturbations. If security rules are written directly against raw text, the rule base will expand infinitely and be easily bypassed.
+
+\textbf{Mechanism:} The runtime first triggers the \texttt{generate\_user\_intent} action. Rather than relying on hardcoded rules, this action uses vector search to find the most similar intent examples (few-shot examples) in the configuration, then prompts the LLM to classify the current input into a predefined "canonical form." For example, whether the user inputs "hey," "hello," or "good morning," the system normalizes it to the \texttt{express greeting} event.
+
+\textbf{Security Value:} This layer serves as the first line of defense. By forcing inputs to map to a finite set of intents, prompt injection attacks attempting to use homophone substitution, Unicode obfuscation, or similar techniques often fail because they cannot match valid intents, or are forced into the \texttt{unhandled} category, triggering default security fallback policies.
+
+\subsubsection{Stage 2: Next-Step Prediction and Flow Decision}
+
+Once intent is determined, the system must decide the next action. This is where Colang flows come into play.
+
+\textbf{Hybrid Control Model:}
+\begin{itemize}
+\item \textbf{Deterministic Path:} If a Colang script explicitly defines a flow \texttt{check security} that mandates \texttt{bot refuse} when \texttt{ask about sensitive data} is detected, the runtime will enforce this path, completely bypassing the LLM's generation logic. This is the foundation for implementing "hard constraints."
+\item \textbf{Probabilistic Path:} If no matching explicit flow exists, the system falls back to the LLM, requesting it to predict the next logical step. This design allows the system to maintain flexibility when handling undefined security boundaries while enforcing absolute control within security boundaries.
+\end{itemize}
+
+\textbf{Architectural Insight:} This hybrid model resolves the contradiction between overly rigid traditional rule engines and uncontrollable pure LLM systems. Security teams can write high-priority "security flows" to cover all high-risk scenarios (e.g., politically sensitive topics, competitor mentions), while leaving low-risk casual conversation to the model's free generation.
+
+\subsubsection{Stage 3: Bot Utterance Generation and Output Auditing}
+
+Even after the system determines what the bot "should" say (e.g., \texttt{bot express apology}), the specific generated text still requires LLM completion, introducing secondary risk.
+
+\textbf{Mechanism:} The \texttt{generate\_bot\_message} action is responsible for generating the final text.
+
+\textbf{Output Rails:} Before text is returned to the user, output rails are triggered. This is not merely simple keyword filtering, but can invoke specialized models (such as Llama Guard or custom PII detection models) for semantic scanning of generated content. If hallucinations or sensitive information leakage are detected, the system can intercept the message and replace it with a preset safe response.
+
+\subsection{Five-Category Guardrail System}
+
+NeMo Guardrails subdivides security logic into five categories, constructing a comprehensive defense matrix. This classification not only facilitates logical decoupling but also enables experts from different domains (e.g., compliance experts, security engineers) to maintain their respective rule sets.
+
+\begin{table}[t]
+\caption{Guardrail Categories and Their Functions}
+\label{tab:guardrails}
+\vskip 0.15in
+\begin{center}
+\begin{small}
+\begin{tabular}{p{2.5cm}p{1.5cm}p{4.5cm}p{3.5cm}}
+\toprule
+Category & Stage & Core Function & Typical Scenarios \\
+\midrule
+Input Rails & Pre-processing & Intercept before input enters dialog manager. Lowest computational cost defense layer. & Intercept prompt injection, block obvious malicious instructions, filter PII, detect non-target languages. \\
+Dialog Rails & State management & Control dialog flow and context state. Core logic based on Colang definitions. & Enforce SOPs, prevent topic drift, manage context variables in multi-turn conversations. \\
+Retrieval Rails & RAG integration & Filter and sanitize retrieved document chunks in RAG pipeline. & Prevent "data poisoning" attacks (retrieving documents containing malicious instructions), ensure retrieved content doesn't contain unauthorized sensitive data. \\
+Execution Rails & Tool calling & Validate LLM parameters and return values for external tool calls (APIs, databases). & Prevent SSRF, intercept malicious SQL injection or Python code execution, ensure tool call parameters conform to schema. \\
+Output Rails & Post-processing & Validate final generated text. & Detect hallucinations, prevent PII leakage, ensure tone and style conform to enterprise brand requirements. \\
+\bottomrule
+\end{tabular}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+\section{Colang Language Mechanism}
+
+\subsection{From Rule Engine to Asynchronous State Machine}
+
+Colang is the soul of NeMo Guardrails, defining how security policies are expressed. The evolution from Colang 1.0 to 2.0 represents a fundamental change in the underlying runtime architecture, directly affecting system concurrency performance and expressiveness.
+
+\subsection{Colang 1.0 Limitations: Synchrony and Rigidity}
+
+Early Colang 1.0 design was closer to traditional Intent-Slot filling systems. Its primary architectural bottleneck was \textbf{synchronous blocking execution}.
+
+\textbf{State Explosion:} In 1.0, handling complex multi-turn conversations often led to combinatorial explosion in flow definitions. Any possible context switch required explicit definition, making codebases difficult to maintain.
+
+\textbf{Performance Bottleneck:} Actions in 1.0 were blocking. If an input rail needed to call a remote PII detection API, the entire conversation thread would be suspended, causing significant latency accumulation. This is unacceptable when handling high-concurrency enterprise applications.
+
+\subsection{Colang 2.0: Pythonic Asynchronous Concurrent Runtime}
+
+Colang 2.0 is a refactoring for the generative AI era, introducing Python-like syntax structures and asynchronous primitives, transforming Guardrails into a high-performance concurrent state machine.
+
+\subsubsection{Asynchrony and Concurrency Mechanisms}
+
+This is 2.0's greatest contribution to security architecture. The introduction of \texttt{await} and \texttt{start} keywords enables parallel security detection.
+
+\textbf{Parallel Rails Pattern:} In security architecture, we pursue "zero trust," meaning we must perform multi-dimensional checks on every interaction (toxicity, PII, hallucinations, jailbreaking). In Colang 1.0, these checks were serial ($T_{\text{total}} = T_{\text{toxic}} + T_{\text{pii}} + T_{\text{jailbreak}}$). In 2.0, we can concurrently launch these detection tasks using the \texttt{start} keyword, with the main flow waiting for all tasks to complete via \texttt{await}.
+
+\textbf{Latency Optimization:} This makes total latency approximately equal to the slowest detection service time ($T_{\text{total}} \approx \max(T_{\text{toxic}}, T_{\text{pii}}, T_{\text{jailbreak}})$), dramatically reducing the performance cost of security compliance.
+
+\subsubsection{Explicit Entry Points and Generation Operators}
+
+Colang 2.0 introduces an explicit \texttt{main} flow as the entry point, eliminating the ambiguity of flow trigger conditions in 1.0 and enhancing system predictability.
+
+\textbf{Generation Operator (\ldots):} This is an extremely important syntactic sugar. It allows developers to explicitly delineate the boundary between "deterministic logic" and "generative logic" in Colang scripts. For example, \texttt{answer = ... "Generate a response based on X"}. For auditing purposes, this makes code review clear: all non-\texttt{...} parts are hardcoded, trusted security logic, while \texttt{...}-marked sections are LLM generation regions requiring focused monitoring.
+
+\subsubsection{Standard Library and Modularity}
+
+2.0 introduces a standard library (CSL) and import mechanism. This means security teams can develop a standardized \texttt{corporate-security-policy.co} library containing all mandatory input-output check logic. Development teams from various business lines must import this core library when building their bots. This architecturally achieves \textbf{centralized control and distributed execution} of security policies.
+
+\subsection{State Management and Context Awareness}
+
+Colang 2.0 enhances variable scope and lifecycle management. Security policies can now depend on complex context variables.
+
+\textbf{Accumulative Risk Scoring:} We can define a global variable \texttt{\$user\_risk\_score}. Each time a user triggers a minor violation (e.g., using profanity), the flow logic can increment this score. When the score exceeds a threshold, a circuit breaker mechanism terminates the session. This \textbf{state-accumulation}-based defense strategy is far more powerful than single-shot stateless filters, effectively defending against attackers' "crescendo attacks" conducted through multi-turn conversations.
+
+\section{NVIDIA NIM Integration: Zero-Trust Infrastructure}
+
+If NeMo Guardrails is responsible for application-layer logical security, then NVIDIA NIM (NVIDIA Inference Microservices) is responsible for underlying computational and supply chain security. As security architects, we cannot assume models run in a security vacuum; infrastructure integrity is the foundation of trust.
+
+\subsection{Container Supply Chain Security}
+
+NIM consists of hardened and signed container images containing model weights and inference engines (e.g., TensorRT-LLM).
+
+\textbf{Artifact Signing and Verification:} Every NIM image is cryptographically signed by NVIDIA before release. When deploying in Kubernetes clusters, we can configure admission controllers to enforce image signature verification. This eliminates "supply chain poisoning" risk, where attackers replace images and implant backdoors in models.
+
+\textbf{Safetensors Format:} NIM prioritizes using the safetensors format rather than traditional Python pickle serialization for loading model weights. Pickle has well-known deserialization vulnerabilities allowing arbitrary code execution during model loading. Using safetensors fundamentally eliminates this class of serious Remote Code Execution (RCE) risks.
+
+\textbf{VEX and Vulnerability Management:} NVIDIA provides VEX (Vulnerability Exploitability eXchange) records. In enterprise environments, scanners often report numerous base image CVEs. VEX records can explicitly indicate which CVEs are unexploitable under NIM's specific configuration, significantly reducing Security Operations Center "alert fatigue" and allowing teams to focus on real threats.
+
+\subsection{Inter-Service Communication Security: mTLS and Service Mesh}
+
+In production environments, Guardrails services typically act as gateways, with backend connections to multiple NIM services (e.g., Main NIM for generation and Safety NIM for detection). Communication between these services must follow zero-trust principles.
+
+\textbf{mTLS Encryption:} Through integration with service meshes like Istio or Linkerd, all communication between Guardrails and NIM uses mutual TLS (mTLS) encryption. This not only prevents Man-in-the-Middle (MITM) attacks but, more importantly, provides strong identity authentication.
+
+\textbf{Identity Verification:} mTLS ensures that Guardrails services can only connect to legitimate NIM instances holding valid certificates, preventing cluster-internal attackers from launching malicious Pods masquerading as model services to steal users' sensitive prompt data (which may contain PII).
+
+\textbf{Deployment Pattern:} We recommend the \textbf{Gateway/Service Pattern} rather than Sidecar pattern for deploying Guardrails. The gateway pattern allows centralized policy enforcement, where one Guardrails instance can route and protect multiple backend model services, facilitating independent scaling and security policy upgrades.
+
+\section{Advanced RAG Security and Fact-Checking}
+
+Retrieval-Augmented Generation (RAG) is the mainstream pattern for enterprise applications but introduces specific security risks such as hallucinations and misattribution. NeMo Guardrails provides an evidence-based verification mechanism.
+
+\subsection{NLI-Based Fact-Checking}
+
+NeMo's \texttt{check\_facts} action is not simple keyword matching but advanced verification logic based on Natural Language Inference (NLI) or using LLM-as-a-Judge.
+
+\textbf{Workflow:}
+\begin{enumerate}
+\item The system retrieves relevant knowledge chunks, stored in the \texttt{\$relevant\_chunks} variable.
+\item The LLM generates an answer.
+\item The \texttt{check\_facts} flow is triggered. This flow constructs a verification prompt, using \texttt{\$relevant\_chunks} as the "premise" and the generated answer as the "hypothesis."
+\item The model judges whether the "premise" entails the information in the "hypothesis."
+\end{enumerate}
+
+\textbf{Citation Verification Logic:} Although NeMo itself doesn't directly provide "citation formatting" magic functionality, through the above entailment relationship check, it essentially achieves citation authenticity verification. If the model generates a claim but cannot find evidence in \texttt{\$relevant\_chunks}, the entailment check will fail, and the guardrail will intercept the answer. This effectively prevents the model from fabricating facts or citing non-existent sources.
+
+\subsection{SelfCheckGPT Hallucination Detection Algorithm}
+
+For non-RAG scenarios or to enhance RAG robustness, NeMo implements an algorithm similar to SelfCheckGPT.
+
+\textbf{Random Sampling Consistency:} The core idea of this algorithm is that if a model's answer to the same prompt is factual, multiple sampling results should be consistent at the factual level; if it's a hallucination, multiple sampling results often diverge.
+
+\textbf{Implementation:} The system generates $N$ additional sample answers at high temperature in the background, then compares the consistency between the main answer and these samples. If consistency is low, the system judges it as a hallucination and intercepts or flags it. This is a self-consistency check that doesn't rely on external knowledge bases. Although computationally expensive, it is extremely valuable in high-risk scenarios.
+
+\section{Data Security and NeMo Curator}
+
+Security doesn't only exist at inference time but begins at the data level. If RAG knowledge bases are contaminated or fine-tuning data contains PII, inference-time guardrails will face enormous pressure. NeMo Curator is a critical tool for ensuring data supply chain security.
+
+\subsection{PII Identification and Sanitization}
+
+NeMo Curator employs a hybrid strategy for PII cleaning to balance efficiency and accuracy.
+
+\textbf{Rule Engine (Presidio):} For format-fixed PII (e.g., ID numbers, emails, phone numbers), Presidio is used for high-speed scanning based on regex and logic.
+
+\textbf{LLM Semantic Identification:} For unstructured, context-dependent PII (e.g., "the manager sitting by the window" or implicit home address descriptions), Curator uses large models like Llama 3 70B for semantic-level identification. According to NVIDIA testing, this LLM-based method achieves 26\% higher recall on core PII categories compared to pure rule-based methods.
+
+\textbf{Sanitization Strategy:} Supports \texttt{redact} (direct deletion) and \texttt{replace} (replace with placeholders like \texttt{\{\{PERSON\}\}}). We recommend using the replacement strategy, as it preserves sentence grammatical structure, benefiting subsequent model fine-tuning or RAG retrieval effectiveness.
+
+\subsection{Large-Scale Distributed Processing}
+
+Curator is built on Dask and RAPIDS, supporting distributed processing across multi-GPU nodes. This means it can rapidly clean enterprise data lakes at petabyte scale. This is crucial for preventing "data leakage" in RAG systems—ensuring retrieved chunks are clean and PII-free before entering prompts.
+
+\section{Performance Engineering: Addressing the "Latency Tax"}
+
+Introducing Guardrails inevitably brings latency. In architectural design, we must minimize this "latency tax" through technical means to meet real-time interaction requirements.
+
+\subsection{Streaming Architecture and Chunked Verification}
+
+Traditional synchronous verification requires all generated text to complete before detection, leading to extremely high Time-To-First-Token (TTFT). NeMo introduces a streaming verification mechanism.
+
+\textbf{Stream First Strategy:} After configuring \texttt{stream\_first: True}, LLM-generated tokens are immediately streamed to the client, minimizing user-perceived latency.
+
+\textbf{Chunked Parallel Detection:} Simultaneously, the Guardrails service buffers streaming tokens into chunks (e.g., 128 tokens) in the background. Once the buffer is full, it immediately performs asynchronous security scanning on that chunk.
+
+\textbf{Latency Cutoff:} If a chunk is detected as violating policies, Guardrails immediately cuts off the stream and sends a preset error message to override or append to the frontend. Although this may cause users to briefly see partial violating content (very short time window), it achieves the best balance between user experience (extremely fast response) and security.
+
+\textbf{Chunk Size Trade-off:} Smaller chunks enable faster detection but may lose context; larger chunks (e.g., 256 tokens) provide more complete context (beneficial for hallucination detection) but increase latency. We typically recommend 128 tokens as a balance point.
+
+\subsection{Latency Model Analysis}
+
+In the optimized architecture, the total latency model is:
+
+\begin{equation}
+L_{\text{total}} = L_{\text{input\_rail}} + L_{\text{first\_token}} + \epsilon
+\end{equation}
+
+where $L_{\text{input\_rail}}$ is compressed through parallelization (parallel execution), i.e., toxicity detection and PII detection run in parallel, taking the maximum value rather than the sum. Output rail latency is hidden in the generation process through streaming mechanisms and no longer blocks first-token display.
+
+\section{Security Evaluation and Red Teaming}
+
+As security architects, we cannot only build defenses but must conduct adversarial testing. NVIDIA's AI Red Teaming methodology provides evaluation standards.
+
+\subsection{Methodology: Limit-Seeking}
+
+NVIDIA's red team testing emphasizes "limit-seeking, non-malicious" exploration. This means the testing goal is not simply to break but to probe model behavior boundaries.
+
+\textbf{Tool Integration:} The NeMo ecosystem integrates automated scanning tools like Garak to probe known vulnerability patterns (e.g., prefix injection, goal hijacking).
+
+\textbf{Specific Attack Vector Defense:}
+\begin{itemize}
+\item \textbf{Jailbreaking:} Uses specialized JailbreakDetect NIM, a model specifically trained against adversarial prompts (e.g., DAN mode, Base64 encoded attacks) that can identify structured attacks attempting to bypass security policies.
+\item \textbf{Prompt Injection:} By strictly isolating user input in specific regions of prompt templates and coordinating with Input Rails for semantic intent recognition, NeMo effectively reduces instruction injection risk.
+\end{itemize}
+
+\section{Conclusion and Strategic Recommendations}
+
+In summary, the NVIDIA NeMo ecosystem constructs an enterprise-grade AI security loop through NeMo Guardrails' programmability, Colang 2.0's asynchronous concurrency capabilities, and NIM's infrastructure security.
+
+\textbf{Core Recommendations:}
+\begin{enumerate}
+\item \textbf{Embrace Colang 2.0 Comprehensively:} Although 1.0 is still in use, immediate migration planning to 2.0 should begin. 2.0's asynchronous features are the only path to solving multi-modal security detection latency bottlenecks.
+\item \textbf{Implement Zero-Trust Networking:} Enforce mTLS between NIM and Guardrails. Do not expose model services on cluster networks.
+\item \textbf{Emphasize Both Data and Models:} Deploy Guardrails not only at inference time but also use Curator for cleaning at the data level. Dirty data renders even the best guardrails ineffective.
+\item \textbf{Hybrid Defense Strategy:} Leverage NeMo's flexibility to combine deterministic flow logic (for high-risk red lines) and probabilistic LLM detection (for long-tail risks), constructing a multi-layer defense system.
+\end{enumerate}
+
+The NeMo project demonstrates that AI security is no longer esoteric but a systems engineering discipline that can be solved through precise engineering architecture.
+
+\section*{Impact Statement}
+
+This paper presents work whose goal is to advance the field of Machine Learning security, specifically in the context of Large Language Model deployment. The security analysis and architectural insights presented here can help organizations deploy LLM-based systems more safely in enterprise environments. There are many potential societal consequences of our work, including improved safety of AI systems in critical applications, but also potential concerns about over-reliance on automated security mechanisms. We encourage further research into the limitations and failure modes of guardrail systems.
+
+% Acknowledgements should only appear in the accepted version.
+% \section*{Acknowledgements}
+
+\bibliography{nemo_security_analysis}
+\bibliographystyle{icml2025}
+
+\end{document}
+
