@@ -143,15 +143,64 @@ Guardrails AI 是一个Python框架，专注于解决**结构化数据生成**�
 
 ### 表1：主流AI护栏架构技术对比
 
-| **特性维度**   | **NVIDIA NeMo Guardrails** | **Anthropic Constitutional AI** | **Guardrails AI (RAIL)** |
-| ---------- | -------------------------- | ------------------------------- | ------------------------ |
-| **核心机制**   | 编排与拦截（中间件模式）               | 内在模型对齐（训练模式）                    | 结构化验证与解析（输出层）            |
-| **控制类型**   | 确定性（规则/Colang流）            | 概率性（原则/RLAIF）                   | 结构/类型强制（Schema）          |
-| **配置方式**   | Colang / YAML 配置文件         | 自然语言“宪法”原则                      | RAIL Spec (XML/Pydantic) |
-| **延迟影响**   | 中等（取决于分类器链的长度）             | 无（推理时无额外开销）                     | 中高（需解析，甚至触发重生成）          |
-| **最佳适用场景** | 对话流控制、RAG防幻觉、话题阻断          | 通用安全性、反毒性、价值观对齐                 | JSON/代码生成、API参数验证        |
-| **可审计性**   | 高（明确的规则与日志）                | 低（黑盒模型行为）                       | 高（明确的验证失败日志）             |
-| **开源状态**   | 开源工具包                      | 闭源方法论（模型私有）                     | 开源库                      |
+<div style="overflow-x: auto;">
+
+<table style="width: 100%; table-layout: auto; font-size: 0.9em; word-wrap: break-word;">
+<thead>
+<tr>
+<th style="width: 15%;">特性维度</th>
+<th style="width: 28%;">NVIDIA NeMo Guardrails</th>
+<th style="width: 28%;">Anthropic Constitutional AI</th>
+<th style="width: 29%;">Guardrails AI (RAIL)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>核心机制</strong></td>
+<td>编排与拦截（中间件模式）</td>
+<td>内在模型对齐（训练模式）</td>
+<td>结构化验证与解析（输出层）</td>
+</tr>
+<tr>
+<td><strong>控制类型</strong></td>
+<td>确定性（规则/Colang流）</td>
+<td>概率性（原则/RLAIF）</td>
+<td>结构/类型强制（Schema）</td>
+</tr>
+<tr>
+<td><strong>配置方式</strong></td>
+<td>Colang / YAML 配置文件</td>
+<td>自然语言"宪法"原则</td>
+<td>RAIL Spec (XML/Pydantic)</td>
+</tr>
+<tr>
+<td><strong>延迟影响</strong></td>
+<td>中等（取决于分类器链的长度）</td>
+<td>无（推理时无额外开销）</td>
+<td>中高（需解析，甚至触发重生成）</td>
+</tr>
+<tr>
+<td><strong>最佳适用场景</strong></td>
+<td>对话流控制、RAG防幻觉、话题阻断</td>
+<td>通用安全性、反毒性、价值观对齐</td>
+<td>JSON/代码生成、API参数验证</td>
+</tr>
+<tr>
+<td><strong>可审计性</strong></td>
+<td>高（明确的规则与日志）</td>
+<td>低（黑盒模型行为）</td>
+<td>高（明确的验证失败日志）</td>
+</tr>
+<tr>
+<td><strong>开源状态</strong></td>
+<td>开源工具包</td>
+<td>闭源方法论（模型私有）</td>
+<td>开源库</td>
+</tr>
+</tbody>
+</table>
+
+</div>
 
 * * *
 
