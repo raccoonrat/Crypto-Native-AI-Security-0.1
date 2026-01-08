@@ -293,6 +293,340 @@ END STRUCT
 \end{algorithmic}
 \end{algorithm}
 
+\subsection{灰度发布策略（Gradual Rollout Strategy）}
+
+\begin{design}[灰度发布]
+通过渐进式流量切换策略，在保证系统稳定性的前提下，逐步接管外部Vendor的流量，同时控制成本增长，实现平滑过渡。
+\end{design}
+
+\textbf{设计目标：}
+\begin{itemize}
+    \item \textbf{稳定性优先：} 通过小流量验证，降低系统风险
+    \item \textbf{成本可控：} 逐步减少外部Vendor调用，控制成本增长
+    \item \textbf{可回滚：} 支持快速回滚到Vendor，保障业务连续性
+    \item \textbf{指标驱动：} 基于实时指标自动决策，减少人工干预
+\end{itemize}
+
+\textbf{灰度发布配置：}
+
+\begin{lstlisting}[style=pseudocode, caption=灰度发布配置结构]
+STRUCT RolloutConfig:
+    rollout_id: UINT64              // 灰度发布唯一标识
+    vendor_service: STRING           // 外部Vendor服务标识
+    inhouse_service: STRING          // 自研服务标识
+    current_ratio: FLOAT            // 当前自研流量比例 [0.0, 1.0]
+    target_ratio: FLOAT             // 目标流量比例
+    min_ratio: FLOAT                // 最小流量比例（安全底线）
+    max_ratio: FLOAT                // 最大流量比例（成本上限）
+    stability_threshold: FLOAT       // 稳定性阈值（误杀率/漏判率）
+    cost_threshold: FLOAT           // 成本阈值（单次调用成本）
+    step_size: FLOAT                // 每次增加的流量比例
+    evaluation_period: INT          // 评估周期（小时）
+    start_time: TIMESTAMP           // 开始时间
+    end_time: TIMESTAMP             // 结束时间
+END STRUCT
+\end{lstlisting}
+
+\textbf{灰度发布路由算法：}
+
+\begin{algorithm}[H]
+\caption{灰度发布路由算法}
+\begin{algorithmic}[1]
+\STATE 输入：请求 $request$，灰度配置 $rollout$
+\STATE 输出：使用的服务标识 $service\_id$
+\STATE
+\STATE $current\_time \leftarrow GetCurrentTime()$
+\IF{$current\_time < rollout.start\_time$ OR $current\_time > rollout.end\_time$}
+    \RETURN $rollout.vendor\_service$  \COMMENT{灰度未开始或已结束}
+\ENDIF
+\STATE
+\STATE $metrics \leftarrow GetRolloutMetrics(rollout.rollout\_id)$
+\STATE
+\STATE // 稳定性检查：如果指标异常，降低自研流量比例
+\IF{$metrics.false\_positive\_rate > rollout.stability\_threshold$ OR 
+    $metrics.false\_negative\_rate > rollout.stability\_threshold$}
+    \STATE $rollout.current\_ratio \leftarrow MAX(rollout.min\_ratio, rollout.current\_ratio - rollout.step\_size)$
+    \STATE $TriggerAlert("Stability threshold exceeded, reducing ratio")$
+\ENDIF
+\STATE
+\STATE // 成本检查：如果成本超限，降低自研流量比例
+\IF{$metrics.cost\_per\_request > rollout.cost\_threshold$}
+    \STATE $rollout.current\_ratio \leftarrow MAX(rollout.min\_ratio, rollout.current\_ratio - rollout.step\_size)$
+    \STATE $TriggerAlert("Cost threshold exceeded, reducing ratio")$
+\ENDIF
+\STATE
+\STATE // 基于用户ID的确定性路由
+\STATE $hash\_seed \leftarrow request.user\_id \oplus rollout.rollout\_id$
+\STATE $hash\_value \leftarrow MurmurHash3(hash\_seed)$
+\STATE $bucket \leftarrow hash\_value \bmod 10000$
+\STATE $threshold \leftarrow rollout.current\_ratio \times 10000$
+\STATE
+\IF{$bucket < threshold$}
+    \RETURN $rollout.inhouse\_service$  \COMMENT{自研服务}
+\ELSE
+    \RETURN $rollout.vendor\_service$   \COMMENT{Vendor服务}
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{自动流量调整算法：}
+
+\begin{algorithm}[H]
+\caption{自动流量调整算法}
+\begin{algorithmic}[1]
+\STATE 输入：灰度配置 $rollout$，评估周期 $evaluation\_period$
+\STATE
+\STATE $metrics \leftarrow GetMetricsForPeriod(rollout.rollout\_id, evaluation\_period)$
+\STATE
+\STATE // 检查稳定性指标
+\STATE $stability\_ok \leftarrow TRUE$
+\IF{$metrics.false\_positive\_rate > rollout.stability\_threshold$ OR
+    $metrics.false\_negative\_rate > rollout.stability\_threshold$ OR
+    $metrics.error\_rate > ERROR\_RATE\_THRESHOLD$}
+    \STATE $stability\_ok \leftarrow FALSE$
+\ENDIF
+\STATE
+\STATE // 检查成本指标
+\STATE $cost\_ok \leftarrow TRUE$
+\IF{$metrics.cost\_per\_request > rollout.cost\_threshold$}
+    \STATE $cost\_ok \leftarrow FALSE$
+\ENDIF
+\STATE
+\STATE // 检查性能指标
+\STATE $performance\_ok \leftarrow TRUE$
+\IF{$metrics.p95\_latency > LATENCY\_THRESHOLD$}
+    \STATE $performance\_ok \leftarrow FALSE$
+\ENDIF
+\STATE
+\STATE // 决策：是否增加流量
+\IF{$stability\_ok$ AND $cost\_ok$ AND $performance\_ok$}
+    \IF{$rollout.current\_ratio < rollout.target\_ratio$}
+        \STATE // 逐步增加流量
+        \STATE $new\_ratio \leftarrow MIN(rollout.target\_ratio, rollout.current\_ratio + rollout.step\_size)$
+        \STATE $new\_ratio \leftarrow MIN(new\_ratio, rollout.max\_ratio)$
+        \STATE $UpdateRolloutRatio(rollout.rollout\_id, new\_ratio)$
+        \STATE $LogRolloutProgress(rollout.rollout\_id, new\_ratio, "Increased")$
+    \ENDIF
+\ELSE
+    \STATE // 指标异常，降低流量或保持当前比例
+    \IF{NOT $stability\_ok$}
+        \STATE $new\_ratio \leftarrow MAX(rollout.min\_ratio, rollout.current\_ratio - rollout.step\_size)$
+        \STATE $UpdateRolloutRatio(rollout.rollout\_id, new\_ratio)$
+        \STATE $LogRolloutProgress(rollout.rollout\_id, new\_ratio, "Decreased due to stability")$
+    \ELSIF{NOT $cost\_ok$}
+        \STATE $new\_ratio \leftarrow MAX(rollout.min\_ratio, rollout.current\_ratio - rollout.step\_size)$
+        \STATE $UpdateRolloutRatio(rollout.rollout\_id, new\_ratio)$
+        \STATE $LogRolloutProgress(rollout.rollout\_id, new\_ratio, "Decreased due to cost")$
+    \ENDIF
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{双路验证机制：}
+
+\begin{algorithm}[H]
+\caption{双路验证机制（保障稳定性）}
+\begin{algorithmic}[1]
+\STATE 输入：请求 $request$，灰度配置 $rollout$
+\STATE 输出：最终决策结果 $final\_result$
+\STATE
+\STATE // 主路：根据灰度比例路由
+\STATE $primary\_service \leftarrow RouteByRollout(request, rollout)$
+\STATE $primary\_result \leftarrow CheckWithService(request, primary\_service)$
+\STATE
+\STATE // 验证路：始终调用Vendor（用于对比验证）
+\STATE $vendor\_result \leftarrow CheckWithService(request, rollout.vendor\_service)$
+\STATE
+\STATE // 双路对比分析
+\STATE $comparison \leftarrow CompareResults(primary\_result, vendor\_result)$
+\STATE $RecordComparison(rollout.rollout\_id, comparison)$
+\STATE
+\STATE // 决策策略：安全优先
+\IF{$rollout.current\_ratio < SAFETY\_PHASE\_THRESHOLD$}
+    \STATE // 小流量阶段：Vendor结果优先，自研仅用于验证
+    \IF{$primary\_service == rollout.inhouse\_service$}
+        \STATE // 如果自研和Vendor结果不一致，以Vendor为准
+        \IF{$primary\_result.blocked \neq vendor\_result.blocked$}
+            \STATE $final\_result \leftarrow vendor\_result$
+            \STATE $LogDisagreement(rollout.rollout\_id, primary\_result, vendor\_result)$
+        \ELSE
+            \STATE $final\_result \leftarrow primary\_result$
+        \ENDIF
+    \ELSE
+        \STATE $final\_result \leftarrow primary\_result$
+    \ENDIF
+\ELSE
+    \STATE // 大流量阶段：自研结果优先，Vendor作为兜底
+    \IF{$primary\_service == rollout.inhouse\_service$}
+        \STATE $final\_result \leftarrow primary\_result$
+        \STATE // 如果自研判定为安全但Vendor判定为不安全，记录异常
+        \IF{NOT $primary\_result.blocked$ AND $vendor\_result.blocked$}
+            \STATE $LogPotentialMiss(rollout.rollout\_id, request, primary\_result, vendor\_result)$
+        \ENDIF
+    \ELSE
+        \STATE $final\_result \leftarrow primary\_result$
+    \ENDIF
+\ENDIF
+\RETURN $final\_result$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{成本控制策略：}
+
+\begin{algorithm}[H]
+\caption{成本控制算法}
+\begin{algorithmic}[1]
+\STATE 输入：灰度配置 $rollout$，时间窗口 $time\_window$
+\STATE
+\STATE $metrics \leftarrow GetCostMetrics(rollout.rollout\_id, time\_window)$
+\STATE
+\STATE // 计算自研服务成本
+\STATE $inhouse\_cost \leftarrow metrics.inhouse\_requests \times COST\_PER\_INHOUSE\_REQUEST$
+\STATE
+\STATE // 计算Vendor服务成本
+\STATE $vendor\_cost \leftarrow metrics.vendor\_requests \times COST\_PER\_VENDOR\_REQUEST$
+\STATE
+\STATE // 计算总成本
+\STATE $total\_cost \leftarrow inhouse\_cost + vendor\_cost$
+\STATE
+\STATE // 计算成本节省率
+\STATE $cost\_saving \leftarrow (vendor\_cost - inhouse\_cost) / vendor\_cost$
+\STATE
+\STATE // 成本决策
+\IF{$total\_cost > rollout.cost\_threshold \times metrics.total\_requests$}
+    \STATE // 成本超限，降低自研流量比例
+    \STATE $new\_ratio \leftarrow MAX(rollout.min\_ratio, rollout.current\_ratio - rollout.step\_size)$
+    \STATE $UpdateRolloutRatio(rollout.rollout\_id, new\_ratio)$
+    \STATE $TriggerAlert("Cost exceeded, reducing inhouse ratio")$
+\ELSIF{$cost\_saving > MIN\_COST\_SAVING$ AND $rollout.current\_ratio < rollout.target\_ratio$}
+    \STATE // 成本节省明显，可以增加自研流量
+    \STATE $new\_ratio \leftarrow MIN(rollout.target\_ratio, rollout.current\_ratio + rollout.step\_size)$
+    \STATE $UpdateRolloutRatio(rollout.rollout\_id, new\_ratio)$
+\ENDIF
+\STATE
+\RETURN $\{total\_cost, cost\_saving, inhouse\_cost, vendor\_cost\}$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{灰度发布流程：}
+
+\begin{algorithm}[H]
+\caption{灰度发布完整流程}
+\begin{algorithmic}[1]
+\STATE 输入：灰度配置 $rollout$
+\STATE
+\STATE // 阶段1：极小流量验证（1\%）
+\STATE $rollout.current\_ratio \leftarrow 0.01$
+\STATE $DeployRollout(rollout)$
+\STATE $WaitForEvaluation(rollout.evaluation\_period)$
+\STATE
+\IF{NOT $CheckStability(rollout)$}
+    \STATE $RollbackToVendor(rollout)$
+    \STATE RETURN "Rollout failed at 1\%"
+\ENDIF
+\STATE
+\STATE // 阶段2：小流量验证（5\%）
+\STATE $rollout.current\_ratio \leftarrow 0.05$
+\STATE $UpdateRolloutRatio(rollout.rollout\_id, 0.05)$
+\STATE $WaitForEvaluation(rollout.evaluation\_period)$
+\STATE
+\IF{NOT $CheckStability(rollout)$}
+    \STATE $rollout.current\_ratio \leftarrow 0.01$  \COMMENT{回退到1\%}
+    \STATE $UpdateRolloutRatio(rollout.rollout\_id, 0.01)$
+\ENDIF
+\STATE
+\STATE // 阶段3：逐步增加（5\% → 10\% → 20\% → 50\% → 100\%）
+\STATE $ratios \leftarrow [0.10, 0.20, 0.50, 1.0]$
+\FOR{$target\_ratio$ IN $ratios$}
+    \STATE $rollout.current\_ratio \leftarrow target\_ratio$
+    \STATE $UpdateRolloutRatio(rollout.rollout\_id, target\_ratio)$
+    \STATE $WaitForEvaluation(rollout.evaluation\_period)$
+    \STATE
+    \IF{NOT $CheckStability(rollout)$ OR NOT $CheckCost(rollout)$}
+        \STATE // 回退到上一个稳定比例
+        \STATE $rollout.current\_ratio \leftarrow GetPreviousStableRatio(rollout)$
+        \STATE $UpdateRolloutRatio(rollout.rollout\_id, rollout.current\_ratio)$
+        \STATE BREAK
+    \ENDIF
+\ENDFOR
+\STATE
+\STATE // 阶段4：全量切换
+\IF{$rollout.current\_ratio == 1.0$}
+    \STATE $MarkRolloutComplete(rollout.rollout\_id)$
+    \STATE $DisableVendorService(rollout.vendor\_service)$
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{稳定性保障机制：}
+
+\begin{algorithm}[H]
+\caption{稳定性检查算法}
+\begin{algorithmic}[1]
+\STATE 输入：灰度配置 $rollout$，评估周期 $period$
+\STATE 输出：是否稳定 $is\_stable$
+\STATE
+\STATE $metrics \leftarrow GetStabilityMetrics(rollout.rollout\_id, period)$
+\STATE
+\STATE // 检查误杀率
+\STATE $fpr\_ok \leftarrow metrics.false\_positive\_rate \leq rollout.stability\_threshold$
+\STATE
+\STATE // 检查漏判率
+\STATE $fnr\_ok \leftarrow metrics.false\_negative\_rate \leq rollout.stability\_threshold$
+\STATE
+\STATE // 检查错误率
+\STATE $error\_ok \leftarrow metrics.error\_rate \leq ERROR\_RATE\_THRESHOLD$
+\STATE
+\STATE // 检查延迟
+\STATE $latency\_ok \leftarrow metrics.p95\_latency \leq LATENCY\_THRESHOLD$
+\STATE
+\STATE // 检查与Vendor的一致性
+\STATE $agreement\_rate \leftarrow CalculateAgreementRate(rollout.rollout\_id, period)$
+\STATE $agreement\_ok \leftarrow agreement\_rate \geq MIN\_AGREEMENT\_RATE$
+\STATE
+\STATE $is\_stable \leftarrow fpr\_ok$ AND $fnr\_ok$ AND $error\_ok$ AND $latency\_ok$ AND $agreement\_ok$
+\STATE
+\IF{NOT $is\_stable$}
+    \STATE $LogStabilityIssues(rollout.rollout\_id, metrics)$
+\ENDIF
+\RETURN $is\_stable$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{快速回滚机制：}
+
+\begin{algorithm}[H]
+\caption{快速回滚算法}
+\begin{algorithmic}[1]
+\STATE 输入：灰度配置 $rollout$，回滚原因 $reason$
+\STATE
+\STATE // 立即将所有流量切回Vendor
+\STATE $rollout.current\_ratio \leftarrow 0.0$
+\STATE $UpdateRolloutRatio(rollout.rollout\_id, 0.0)$
+\STATE
+\STATE // 记录回滚事件
+\STATE $LogRollback(rollout.rollout\_id, reason, GetCurrentMetrics(rollout))$
+\STATE
+\STATE // 发送告警
+\STATE $TriggerAlert("Rollout rolled back", reason)$
+\STATE
+\STATE // 暂停灰度发布
+\STATE $PauseRollout(rollout.rollout\_id)$
+\STATE
+\STATE // 通知相关人员
+\STATE $NotifyTeam(rollout.rollout\_id, "Rollback executed", reason)$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{技术优势：}
+\begin{itemize}
+    \item \textbf{渐进式切换：} 从1\%逐步增加到100\%，每个阶段充分验证
+    \item \textbf{自动调整：} 基于实时指标自动调整流量比例，无需人工干预
+    \item \textbf{成本可控：} 实时监控成本，确保不超过预算阈值
+    \item \textbf{快速回滚：} 支持秒级回滚，保障业务连续性
+    \item \textbf{双路验证：} 小流量阶段双路对比，确保结果一致性
+\end{itemize}
+
 \subsection{代码驱动的策略管理（Code-Driven Policy Management）}
 
 \begin{design}[代码驱动策略]
@@ -377,7 +711,7 @@ END STRUCT
 \textbf{核心算法：}
 
 \begin{algorithm}[H]
-\caption{请求处理流程}
+\caption{请求处理流程（支持灰度发布）}
 \begin{algorithmic}[1]
 \STATE 输入：安全检查请求 $request$
 \STATE 输出：安全检查响应 $response$
@@ -390,14 +724,55 @@ END STRUCT
     \RETURN $ErrorResponse("Rate limit exceeded")$
 \ENDIF
 \STATE
+\STATE // 优先级1：A/B测试路由
 \STATE $experiment \leftarrow GetActiveExperiment(request.user\_id)$
 \IF{$experiment \neq NULL$}
     \RETURN $ExecuteABTest(request, experiment)$
 \ENDIF
 \STATE
+\STATE // 优先级2：灰度发布路由
+\STATE $rollout \leftarrow GetActiveRollout(request.user\_id)$
+\IF{$rollout \neq NULL$}
+    \RETURN $ProcessWithRollout(request, rollout)$
+\ENDIF
+\STATE
+\STATE // 优先级3：正常流程（默认Vendor或全量自研）
 \STATE $result \leftarrow CheckContent(request.text, request.user\_id)$
 \STATE $RecordRequestMetrics(request, result)$
 \RETURN $BuildResponse(result)$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{灰度发布处理算法：}
+
+\begin{algorithm}[H]
+\caption{灰度发布请求处理}
+\begin{algorithmic}[1]
+\STATE 输入：请求 $request$，灰度配置 $rollout$
+\STATE 输出：安全检查响应 $response$
+\STATE
+\STATE // 路由决策
+\STATE $service\_id \leftarrow RouteByRollout(request, rollout)$
+\STATE
+\IF{$service\_id == rollout.inhouse\_service$}
+    \STATE // 自研服务路径
+    \STATE $inhouse\_result \leftarrow CheckContent(request.text, request.user\_id)$
+    \STATE
+    \STATE // 小流量阶段：双路验证
+    \IF{$rollout.current\_ratio < SAFETY\_PHASE\_THRESHOLD$}
+        \STATE $vendor\_result \leftarrow CheckWithVendor(request, rollout.vendor\_service)$
+        \STATE $final\_result \leftarrow DualPathVerification(inhouse\_result, vendor\_result, rollout)$
+    \ELSE
+        \STATE $final\_result \leftarrow inhouse\_result$
+    \ENDIF
+\ELSE
+    \STATE // Vendor服务路径
+    \STATE $final\_result \leftarrow CheckWithVendor(request, rollout.vendor\_service)$
+\ENDIF
+\STATE
+\STATE // 记录指标
+\STATE $RecordRolloutMetrics(rollout.rollout\_id, service\_id, final\_result)$
+\RETURN $BuildResponse(final\_result)$
 \end{algorithmic}
 \end{algorithm}
 
@@ -529,7 +904,40 @@ END STRUCT
     \item 接口可用性 > 99.9\%
 \end{itemize}
 
-\subsection{阶段二：A/B 测试框架（2-3个月）}
+\subsection{阶段二：灰度发布框架（2-3个月）}
+
+\textbf{目标：}实现灰度发布，逐步接管Vendor流量
+
+\textbf{任务：}
+\begin{enumerate}
+    \item 实现灰度发布路由算法
+    \item 实现双路验证机制
+    \item 实现自动流量调整
+    \item 实现成本控制算法
+    \item 实现稳定性检查与快速回滚
+\end{enumerate}
+
+\textbf{灰度发布计划：}
+\begin{itemize}
+    \item \textbf{第1周：} 1\% 流量验证，双路对比，确保稳定性
+    \item \textbf{第2-3周：} 5\% 流量验证，持续监控指标
+    \item \textbf{第4-5周：} 10\% 流量，验证成本控制
+    \item \textbf{第6-7周：} 20\% 流量，验证系统负载
+    \item \textbf{第8-9周：} 50\% 流量，验证大规模场景
+    \item \textbf{第10-11周：} 80\% 流量，接近全量
+    \item \textbf{第12周：} 100\% 流量，完全接管
+\end{itemize}
+
+\textbf{验收标准：}
+\begin{itemize}
+    \item 支持1\%-100\%流量比例动态调整
+    \item 稳定性指标（误杀率、漏判率）< 阈值
+    \item 成本控制在预算范围内
+    \item 支持秒级回滚
+    \item 与Vendor结果一致性 > 95\%
+\end{itemize}
+
+\subsection{阶段三：A/B 测试框架（3-4个月）}
 
 \textbf{目标：}实现确定性 A/B 测试
 
@@ -548,7 +956,7 @@ END STRUCT
     \item 自动决策支持
 \end{itemize}
 
-\subsection{阶段三：策略管理系统（3-4个月）}
+\subsection{阶段四：策略管理系统（4-5个月）}
 
 \textbf{目标：}实现代码驱动的策略管理
 
