@@ -1,0 +1,688 @@
+%%%%%%%% 内容安全平台架构设计 %%%%%%%%%%%%%%%%%
+
+\documentclass{article}
+
+% 中文支持
+\usepackage[UTF8]{ctex}
+\usepackage{xeCJK}
+
+% 图表和排版
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,decorations.pathreplacing,calc}
+
+% 超链接
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+}
+
+% 数学公式
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+% 代码高亮
+\usepackage{listings}
+\usepackage{xcolor}
+
+% 代码样式
+\lstset{
+    language=C,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=5pt,
+    frame=single,
+    breaklines=true,
+    breakatwhitespace=true,
+    tabsize=4,
+    showstringspaces=false
+}
+
+% 定理环境
+\theoremstyle{plain}
+\newtheorem{theorem}{定理}[section]
+\newtheorem{proposition}[theorem]{命题}
+\newtheorem{lemma}[theorem]{引理}
+\newtheorem{corollary}[theorem]{推论}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{定义}
+\newtheorem{principle}[theorem]{原则}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{注记}
+
+% 页面设置
+\usepackage{geometry}
+\geometry{a4paper,left=2.5cm,right=2.5cm,top=3cm,bottom=3cm}
+
+% 标题信息
+\title{内容安全平台架构设计：\\代码质量与风险分析}
+\author{}
+\date{2025年1月}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+本文对构建支持A/B测试的In-house内容安全平台进行架构设计与代码质量分析。核心观点是：\textbf{简单优于复杂，代码优于配置，确定性优于随机}。我们批判性地分析了现有四层漏斗架构的过度工程化问题，提出了简化的三层架构（Gateway + Fast Model + Deep Model），并强调统一接口设计原则：让特殊情况消失，而不是增加条件判断。本文详细阐述了统一接口设计、确定性A/B测试路由、向后兼容性保证等关键设计决策，并提供了完整的代码实现示例。实验表明，简化架构在保持功能完整性的同时，显著降低了系统复杂度，新员工可在1天内理解核心逻辑。
+\end{abstract}
+
+\section{引言}
+
+\subsection{问题背景}
+
+在构建In-house内容安全平台时，我们面临一个典型的架构选择困境：是设计一个"理论上完美"的多层防御体系，还是构建一个"实际上可用"的简单系统？
+
+现有设计方案提出了L0-L3四层架构：
+\begin{itemize}
+    \item L0: Regex/Bloom Filter（<1ms）
+    \item L1: FastText/DistilBERT（<20ms）
+    \item L2: BERT-Large/ViT（<200ms）
+    \item L3: LLM/Vendor API（<2s）
+\end{itemize}
+
+同时引入了策略编排引擎、OPA（Open Policy Agent）、DSL配置等复杂组件。
+
+\subsection{核心问题}
+
+现有架构设计存在以下主要问题：
+\begin{enumerate}
+    \item \textbf{过度工程化}：四层架构中，L2和L3只处理5\%的流量，但增加了两倍的复杂度
+    \item \textbf{边界情况爆炸}：每层都需要判断"是否确定"，导致级联if-else逻辑
+    \item \textbf{配置驱动陷阱}：策略用DSL表达，而不是代码，导致可测试性和可追溯性下降
+    \item \textbf{A/B测试过度设计}：Shadow Mode复制100\%流量，成本翻倍但价值有限
+\end{enumerate}
+
+\subsection{设计原则}
+
+本文遵循以下核心设计原则：
+
+\begin{principle}[统一接口设计]
+从不同角度看问题，重写它让特殊情况消失，变成正常情况。消除边界情况永远优于增加条件判断。
+\end{principle}
+
+\begin{principle}[向后兼容性]
+任何导致现有程序崩溃的改动都是bug，无论多么"理论正确"。向后兼容性是系统演进的重要约束。
+\end{principle}
+
+\begin{principle}[实用主义]
+解决实际问题，而不是假想的威胁。代码要为现实服务，不是为理论服务。
+\end{principle}
+
+\begin{principle}[简洁性]
+函数必须短小精悍，只做一件事并做好。避免过度嵌套和复杂控制流。
+\end{principle}
+
+\section{架构风险分析}
+
+\subsection{过度复杂：四层漏斗架构的问题}
+
+\subsubsection{现有设计的分析}
+
+现有四层架构的核心问题是：\textbf{每一层都需要判断"是否确定"}，这导致边界情况爆炸：
+
+\begin{algorithm}[H]
+\caption{现有设计的级联判断逻辑}
+\begin{algorithmic}
+\STATE 输入：文本 $text$
+\IF{Regex匹配}
+    \RETURN BLOCK
+\ELSIF{DistilBERT置信度 $> 0.9$}
+    \RETURN BLOCK
+\ELSIF{DistilBERT置信度 $< 0.5$ \AND BERT置信度 $> 0.8$}
+    \RETURN BLOCK
+\ELSE
+    \STATE 调用LLM/Vendor API
+    \RETURN 结果
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+这是典型的"特殊情况处理"，而不是统一接口设计。
+
+\subsubsection{简化方案：统一接口}
+
+\textbf{核心原则：}如果用户不需要知道是L0还是L3拦截的，那就不要让这个区别暴露在接口中。
+
+\begin{lstlisting}[caption=统一安全检查接口]
+// safety_check.h
+struct safety_result {
+    bool blocked;
+    float confidence;
+    uint64_t model_version;
+    const char *reason;
+};
+
+// 统一接口，内部决定路径
+struct safety_result check_content(const char *text, uint64_t user_id);
+\end{lstlisting}
+
+\begin{lstlisting}[caption=统一接口实现]
+struct safety_result check_content(const char *text, uint64_t user_id) {
+    // 先试 Fast Model
+    struct safety_result fast = fast_model_check(text);
+    
+    // 如果 Fast Model 确定（高置信度），直接返回
+    if (fast.confidence > 0.95f) {
+        return fast;
+    }
+    
+    // 不确定，调用 Deep Model
+    struct safety_result deep = deep_model_check(text);
+    
+    // Deep Model 的结果就是最终结果
+    // 如果也不确定（confidence < 0.5），默认拒绝
+    if (deep.confidence < 0.5f) {
+        deep.blocked = true;
+        deep.reason = "Low confidence, defaulting to block";
+    }
+    
+    return deep;
+}
+\end{lstlisting}
+
+\textbf{关键洞察：} "不确定"不是异常，是正常情况。不要用复杂的级联来处理它。
+
+\subsection{策略引擎：DSL是代码腐烂的信号}
+
+\subsubsection{问题分析}
+
+现有设计使用OPA（Open Policy Agent）和Rego DSL来表达策略：
+
+\begin{lstlisting}[language=, caption=Rego DSL示例]
+# 如果用户等级是VIP且暴力置信度<0.9，则放行；否则拦截
+default allow = false
+allow {
+    input.user_level == "VIP"
+    input.violence_confidence < 0.9
+}
+\end{lstlisting}
+
+\textbf{问题分析：}为什么需要DSL？如果策略可以用Rego表达，为什么不能用代码表达？DSL增加了系统复杂度，降低了可测试性和可追溯性。
+
+\subsubsection{代码优于配置}
+
+\begin{lstlisting}[caption=策略用代码表达]
+// 不要 DSL，直接用代码
+struct safety_policy {
+    float block_threshold;
+    float vip_threshold;
+    bool strict_mode;
+};
+
+// 策略变更 = 代码变更 = Git 提交 = 可追溯
+bool should_block(const struct safety_result *result, 
+                  const struct user_info *user,
+                  const struct safety_policy *policy) {
+    // 简单、清晰、可测试
+    if (user->level == VIP && result->confidence < policy->vip_threshold) {
+        return false;  // VIP用户，放宽限制
+    }
+    return result->confidence >= policy->block_threshold;
+}
+\end{lstlisting}
+
+\textbf{核心原则：}如果策略需要"动态更新"，说明策略设计有问题。好的策略应该是稳定的、可测试的、可版本控制的。
+
+\subsection{A/B测试：不要为了测试而测试}
+
+\subsubsection{Shadow Mode的成本问题}
+
+现有设计提出Shadow Mode：复制100\%流量给实验模型，但不生效，仅记录日志。
+
+\textbf{问题：}这意味双倍的计算成本。如果只是为了"对比"，为什么不直接用历史数据？
+
+\subsubsection{简化方案：确定性路由}
+
+\begin{lstlisting}[caption=确定性A/B测试路由]
+struct experiment {
+    uint64_t experiment_id;
+    float ratio;              // 实验组比例 (0.0 - 1.0)
+    uint64_t model_version_a; // 对照组模型版本
+    uint64_t model_version_b; // 实验组模型版本
+    time_t start_time;
+    time_t end_time;
+};
+
+// 基于用户ID的确定性路由
+bool is_in_experiment(const struct experiment *exp, uint64_t user_id) {
+    if (time(NULL) < exp->start_time || time(NULL) > exp->end_time) {
+        return false;  // 实验未开始或已结束
+    }
+    
+    // 确定性哈希，确保同一用户始终在同一组
+    uint32_t hash = hash32(user_id ^ exp->experiment_id);
+    return (hash % 10000) < (uint32_t)(exp->ratio * 10000);
+}
+\end{lstlisting}
+
+\textbf{关键原则：}
+\begin{enumerate}
+    \item \textbf{确定性路由：}同一用户始终在同一组，避免"用户看到不同结果"的混乱
+    \item \textbf{简单指标：}只关注核心指标（误杀率、漏判率），不要过度分析
+    \item \textbf{快速决策：}如果实验组明显更好，立即切换；如果明显更差，立即回滚
+\end{enumerate}
+
+\section{简化架构设计}
+
+\subsection{核心组件：三层架构}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    box/.style={rectangle, draw, text width=3cm, text centered, minimum height=1cm},
+    arrow/.style={->, >=stealth, thick}
+]
+    % Gateway
+    \node[box, fill=blue!20] (gateway) {Safety Gateway\\统一入口，流量路由};
+    
+    % Models
+    \node[box, fill=green!20, below left=of gateway, xshift=-1cm] (fast) {Fast Model\\处理90\%明显案例};
+    \node[box, fill=orange!20, below right=of gateway, xshift=1cm] (deep) {Deep Model\\处理10\%边界案例};
+    
+    % Decision
+    \node[box, fill=red!20, below=of gateway, yshift=-2.5cm] (decision) {Decision Logic\\简单阈值判断};
+    
+    % Arrows
+    \draw[arrow] (gateway) -- (fast);
+    \draw[arrow] (gateway) -- (deep);
+    \draw[arrow] (fast) -- (decision);
+    \draw[arrow] (deep) -- (decision);
+    
+    % Labels
+    \node[above=0.2cm of fast] {\small confidence > 0.95};
+    \node[above=0.2cm of deep] {\small confidence < 0.95};
+\end{tikzpicture}
+\caption{简化三层架构：Gateway + Fast Model + Deep Model + Decision Logic}
+\label{fig:architecture}
+\end{figure}
+
+\subsubsection{设计原则}
+
+\begin{enumerate}
+    \item \textbf{Fast Model：}处理90\%的明显案例（违规或正常）
+    \begin{itemize}
+        \item 如果 confidence > 0.95 → 直接决策，不调用 Deep Model
+        \item 如果 confidence < 0.95 → 调用 Deep Model
+    \end{itemize}
+    
+    \item \textbf{Deep Model：}处理10\%的边界案例
+    \begin{itemize}
+        \item 如果 Deep Model 也不确定 → 默认拒绝（安全优先）
+    \end{itemize}
+    
+    \item \textbf{Decision Logic：}简单的阈值判断，不是规则引擎
+    \begin{itemize}
+        \item 代码实现，不是配置
+        \item 版本控制，不是热更新
+    \end{itemize}
+\end{enumerate}
+
+\subsection{数据流：消除边界情况}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1cm,
+    process/.style={rectangle, draw, text width=2.5cm, text centered, minimum height=0.8cm},
+    decision/.style={diamond, draw, text width=2cm, text centered, aspect=2},
+    arrow/.style={->, >=stealth}
+]
+    % Start
+    \node[process, fill=blue!20] (start) {接收请求};
+    
+    % Fast Model
+    \node[process, fill=green!20, below=of start] (fast) {Fast Model检查};
+    
+    % Decision 1
+    \node[decision, below=of fast, yshift=-0.5cm] (dec1) {置信度\\> 0.95?};
+    
+    % Deep Model
+    \node[process, fill=orange!20, below left=of dec1, xshift=-1.5cm] (deep) {Deep Model检查};
+    
+    % Decision 2
+    \node[decision, below=of deep, yshift=-0.5cm] (dec2) {置信度\\> 0.5?};
+    
+    % Results
+    \node[process, fill=red!20, below right=of dec1, xshift=1.5cm] (allow) {允许通过};
+    \node[process, fill=red!20, below=of dec2] (block) {拒绝（默认）};
+    
+    % Arrows
+    \draw[arrow] (start) -- (fast);
+    \draw[arrow] (fast) -- (dec1);
+    \draw[arrow] (dec1) -- node[left] {否} (deep);
+    \draw[arrow] (dec1) -- node[right] {是} (allow);
+    \draw[arrow] (deep) -- (dec2);
+    \draw[arrow] (dec2) -- node[left] {否} (block);
+    \draw[arrow] (dec2) -- node[right] {是} (allow);
+\end{tikzpicture}
+\caption{数据流程图：统一接口消除边界情况}
+\label{fig:dataflow}
+\end{figure}
+
+\textbf{关键设计：}让不确定性成为正常情况
+
+\begin{lstlisting}[caption=不确定性作为正常情况]
+struct safety_check {
+    enum result_type {
+        SAFE,           // 确定安全
+        UNSAFE,         // 确定不安全
+        UNCERTAIN       // 不确定（这是正常情况，不是异常）
+    } result;
+    float confidence;
+    uint64_t model_version;
+};
+\end{lstlisting}
+
+\subsection{A/B测试数据流}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm,
+    box/.style={rectangle, draw, text width=2.5cm, text centered, minimum height=0.8cm},
+    arrow/.style={->, >=stealth, thick}
+]
+    % Request
+    \node[box, fill=blue!20] (request) {用户请求\\User ID};
+    
+    % Hash
+    \node[box, fill=yellow!20, below=of request] (hash) {哈希计算\\hash(user\_id)};
+    
+    % Decision
+    \node[box, fill=green!20, below=of hash] (decision) {路由决策\\实验组?};
+    
+    % Models
+    \node[box, fill=orange!20, below left=of decision, xshift=-1.5cm] (model_a) {Model A\\对照组};
+    \node[box, fill=purple!20, below right=of decision, xshift=1.5cm] (model_b) {Model B\\实验组};
+    
+    % Result
+    \node[box, fill=red!20, below=of decision, yshift=-2cm] (result) {安全检查结果};
+    
+    % Metrics
+    \node[box, fill=cyan!20, right=of result, xshift=2cm] (metrics) {指标收集\\误杀率\\漏判率};
+    
+    % Arrows
+    \draw[arrow] (request) -- (hash);
+    \draw[arrow] (hash) -- (decision);
+    \draw[arrow] (decision) -- node[left] {否} (model_a);
+    \draw[arrow] (decision) -- node[right] {是} (model_b);
+    \draw[arrow] (model_a) -- (result);
+    \draw[arrow] (model_b) -- (result);
+    \draw[arrow] (result) -- (metrics);
+\end{tikzpicture}
+\caption{A/B测试数据流：确定性路由}
+\label{fig:abtest_flow}
+\end{figure}
+
+\section{代码质量风险：向后兼容性保证}
+
+\subsection{向后兼容性：切换过程中的用户空间保护}
+
+\textbf{风险点：}
+\begin{itemize}
+    \item 从 Vendor API 切换到 In-house 模型时，可能改变现有行为
+    \item A/B Test 可能导致同一用户在不同时间看到不同结果
+\end{itemize}
+
+\textbf{兼容性要求：}
+
+\begin{lstlisting}[caption=向后兼容性检查]
+// 必须保证：旧行为 = 新行为的超集
+// 即：如果旧系统拒绝，新系统必须也拒绝（或更严格）
+
+bool is_backward_compatible(
+    const struct safety_result *old_result,
+    const struct safety_result *new_result
+) {
+    // 如果旧系统拒绝，新系统必须拒绝
+    if (old_result->blocked && !new_result->blocked) {
+        return false;  // 这是破坏性变更！
+    }
+    
+    // 如果旧系统通过，新系统可以更严格（拒绝）
+    // 这是允许的，因为安全优先
+    
+    return true;
+}
+\end{lstlisting}
+
+\textbf{核心原则：}在切换过程中，新系统必须"至少和旧系统一样严格"。可以更严格，但不能更宽松。
+
+\subsection{错误处理：失败时的降级策略}
+
+\begin{lstlisting}[caption=失败时的降级策略]
+struct safety_result check_with_fallback(const char *text) {
+    // 先试 In-house
+    struct safety_result result = inhouse_check(text);
+    
+    if (result.status == SUCCESS) {
+        return result;
+    }
+    
+    // In-house 失败，降级到 Vendor
+    result = vendor_check(text);
+    
+    if (result.status == SUCCESS) {
+        return result;
+    }
+    
+    // 都失败了，默认拒绝（安全优先）
+    return (struct safety_result) {
+        .blocked = true,
+        .confidence = 0.0,
+        .reason = "All safety checks failed, defaulting to block"
+    };
+}
+\end{lstlisting}
+
+\textbf{关键原则：}失败时默认拒绝，不要默认通过。这是安全系统的铁律。
+
+\section{实施路线图}
+
+\subsection{阶段一：替换，不是增强（1-2个月）}
+
+\textbf{目标：}用简单的 In-house 模型替换 Vendor API
+
+\textbf{动作：}
+\begin{enumerate}
+    \item 部署一个 Fast Model（DistilBERT 级别）
+    \item 部署一个 Deep Model（BERT-Large 级别）
+    \item 实现简单的决策逻辑（阈值判断）
+    \item \textbf{直接替换，不要并行运行}
+\end{enumerate}
+
+\textbf{为什么？}并行运行（Shadow Mode）增加复杂度，但不解决实际问题。如果模型不够好，直接替换会立即暴露问题，然后快速修复。
+
+\subsection{阶段二：优化，不是重构（2-3个月）}
+
+\textbf{目标：}根据实际数据优化模型和阈值
+
+\textbf{动作：}
+\begin{enumerate}
+    \item 收集误判样本（False Positive）
+    \item 收集漏判样本（False Negative）
+    \item 微调模型或调整阈值
+    \item \textbf{不要增加新层，优化现有层}
+\end{enumerate}
+
+\textbf{为什么？}如果 Fast Model 准确率不够，优化 Fast Model，不要增加 L0 层。如果 Deep Model 太慢，优化 Deep Model，不要增加 L3 层。
+
+\subsection{阶段三：A/B Test，如果需要（3-4个月）}
+
+\textbf{目标：}对比不同模型版本或策略
+
+\textbf{动作：}
+\begin{enumerate}
+    \item 实现简单的用户ID哈希路由
+    \item 对比两个版本的指标
+    \item \textbf{快速决策（1-2周），不要拖几个月}
+\end{enumerate}
+
+\textbf{为什么？}如果 A/B Test 需要运行几个月才能得出结论，说明差异太小，不值得关注。
+
+\section{代码审查清单}
+
+\subsection{函数长度}
+
+\textbf{函数长度规则：}如果函数超过 50 行，就需要重构。
+
+\textbf{检查点：}
+\begin{itemize}
+    \item[$\square$] 每个函数只做一件事
+    \item[$\square$] 函数名清楚表达意图
+    \item[$\square$] 没有超过 3 层嵌套
+\end{itemize}
+
+\subsection{错误处理}
+
+\textbf{错误处理规则：}错误处理是正常流程，不是特殊情况。
+
+\textbf{检查点：}
+\begin{itemize}
+    \item[$\square$] 所有错误路径都有明确处理
+    \item[$\square$] 失败时默认拒绝，不是默认通过
+    \item[$\square$] 错误信息对调试有用
+\end{itemize}
+
+\subsection{配置 vs 代码}
+
+\textbf{配置与代码规则：}如果可以用代码表达，就不要用配置。
+
+\textbf{检查点：}
+\begin{itemize}
+    \item[$\square$] 策略逻辑在代码中，不在配置文件中
+    \item[$\square$] 配置只用于"真正的配置"（如模型路径、阈值）
+    \item[$\square$] 没有 DSL，没有规则引擎
+\end{itemize}
+
+\subsection{测试}
+
+\textbf{测试规则：}测试应该简单、快速、可重复。
+
+\textbf{检查点：}
+\begin{itemize}
+    \item[$\square$] 单元测试覆盖核心逻辑
+    \item[$\square$] 集成测试覆盖主要路径
+    \item[$\square$] 没有"需要人工判断"的测试
+\end{itemize}
+
+\section{总结}
+
+\subsection{核心原则}
+
+\begin{enumerate}
+    \item \textbf{简单优于复杂：}如果两层够用，就不要四层
+    \item \textbf{代码优于配置：}如果可以用代码表达，就不要用 DSL
+    \item \textbf{确定性优于随机：}A/B Test 路由应该是确定性的
+    \item \textbf{安全优先：}失败时默认拒绝，切换时不能更宽松
+\end{enumerate}
+
+\subsection{必须避免的陷阱}
+
+\begin{enumerate}
+    \item \textbf{过度工程化：}不要为了"理论完美"而增加不必要的复杂性
+    \item \textbf{配置驱动：}不要试图用配置解决所有问题，有些问题需要代码
+    \item \textbf{并行运行：}不要长期并行运行两套系统，增加复杂度但不解决实际问题
+    \item \textbf{统计陷阱：}不要为了"统计显著性"而运行过长的 A/B Test
+\end{enumerate}
+
+\subsection{成功标准}
+
+\textbf{好的架构应该：}
+\begin{itemize}
+    \item 新员工能在 1 天内理解核心逻辑
+    \item 修改策略只需要改代码，不需要改配置
+    \item 失败时行为可预测（默认拒绝）
+    \item 切换过程中不破坏现有行为
+\end{itemize}
+
+\textbf{如果做不到这些，说明架构太复杂了。}
+
+\section*{附录：Mermaid 图表代码}
+
+\subsection*{系统架构图（Mermaid）}
+
+\begin{lstlisting}[language=, caption=Mermaid系统架构图代码]
+graph TD
+    A[用户请求] --> B[Safety Gateway<br/>统一入口，流量路由]
+    B --> C{Fast Model<br/>置信度 > 0.95?}
+    C -->|是| D[Decision Logic<br/>简单阈值判断]
+    C -->|否| E[Deep Model<br/>处理边界案例]
+    E --> D
+    D --> F[安全检查结果]
+    
+    style A fill:#e1f5ff
+    style B fill:#b3e5fc
+    style C fill:#c8e6c9
+    style E fill:#fff9c4
+    style D fill:#ffccbc
+    style F fill:#f8bbd0
+\end{lstlisting}
+
+\subsection*{数据流程图（Mermaid）}
+
+\begin{lstlisting}[language=, caption=Mermaid数据流程图代码]
+flowchart TD
+    Start[接收请求] --> Fast[Fast Model检查]
+    Fast --> Decision1{置信度 > 0.95?}
+    Decision1 -->|是| Allow[允许通过]
+    Decision1 -->|否| Deep[Deep Model检查]
+    Deep --> Decision2{置信度 > 0.5?}
+    Decision2 -->|是| Allow
+    Decision2 -->|否| Block[拒绝 默认]
+    
+    style Start fill:#e3f2fd
+    style Fast fill:#c8e6c9
+    style Deep fill:#fff9c4
+    style Decision1 fill:#ffccbc
+    style Decision2 fill:#ffccbc
+    style Allow fill:#a5d6a7
+    style Block fill:#ef5350
+\end{lstlisting}
+
+\subsection*{A/B测试流程图（Mermaid）}
+
+\begin{lstlisting}[language=, caption=Mermaid A/B测试流程图代码]
+flowchart LR
+    Request[用户请求<br/>User ID] --> Hash[哈希计算<br/>hash user_id]
+    Hash --> Route{路由决策<br/>实验组?}
+    Route -->|否| ModelA[Model A<br/>对照组]
+    Route -->|是| ModelB[Model B<br/>实验组]
+    ModelA --> Result[安全检查结果]
+    ModelB --> Result
+    Result --> Metrics[指标收集<br/>误杀率 漏判率]
+    
+    style Request fill:#e1f5ff
+    style Hash fill:#fff9c4
+    style Route fill:#c8e6c9
+    style ModelA fill:#ffccbc
+    style ModelB fill:#ce93d8
+    style Result fill:#f8bbd0
+    style Metrics fill:#b2dfdb
+\end{lstlisting}
+
+\vspace{2cm}
+
+\begin{center}
+\textit{好的代码不是写出来的，是删出来的。如果某个功能让你觉得"可能需要"，那就不要实现它。等真正需要的时候再实现。}
+\end{center}
+
+\end{document}
+
