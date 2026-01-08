@@ -80,7 +80,7 @@
 \maketitle
 
 \begin{abstract}
-本文档阐述了一个统一的内容安全平台架构设计，该设计采用统一接口、智能路由和确定性A/B测试等核心技术，实现了高性能、低延迟、高可维护性的内容安全检查系统。核心设计要点包括：（1）统一接口设计，消除边界情况处理；（2）智能两级模型路由，优化计算资源分配；（3）确定性A/B测试框架，支持科学化的策略验证；（4）代码驱动的策略管理，确保可追溯性和可测试性。
+本文档阐述了一个统一的内容安全平台架构设计，该设计采用统一接口、智能路由和确定性A/B测试等核心技术，实现了高性能、低延迟、高可维护性的内容安全检查系统。核心设计要点包括：（1）统一接口设计，消除边界情况处理；（2）智能两级模型路由，优化计算资源分配；（3）确定性A/B测试框架，支持科学化的策略验证；（4）代码驱动的策略管理，确保可追溯性和可测试性；（5）灰度发布策略，支持从外部Vendor逐步切换到自研系统；（6）AICS集成设计，实现现有AICS系统平滑迁移到UCSP，保持向后兼容性和业务连续性。
 \end{abstract}
 
 \section{核心设计要点}
@@ -776,6 +776,333 @@ END STRUCT
 \end{algorithmic}
 \end{algorithm}
 
+\section{AICS集成UCSP设计}
+
+\subsection{集成需求分析}
+
+\textbf{背景：}
+AICS（AI Content Safety）作为现有的内容安全系统，需要平滑集成到UCSP（Unified Content Safety Platform）架构中，实现统一的内容安全检查能力，同时保持向后兼容性和业务连续性。
+
+\textbf{核心需求：}
+\begin{itemize}
+    \item \textbf{接口兼容：} 保持AICS现有API接口不变，确保业务方无需修改代码
+    \item \textbf{数据迁移：} 支持AICS历史数据和配置的平滑迁移
+    \item \textbf{能力增强：} 在保持兼容的基础上，提供UCSP的增强能力（智能路由、A/B测试等）
+    \item \textbf{渐进式切换：} 支持从AICS逐步切换到UCSP，降低风险
+    \item \textbf{统一监控：} 集成AICS和UCSP的监控指标，提供统一的可观测性
+\end{itemize}
+
+\subsection{集成架构设计}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm,
+    box/.style={rectangle, draw, text width=3.5cm, text centered, minimum height=0.8cm},
+    arrow/.style={->, >=stealth, thick}
+]
+    \node[box, fill=blue!20] (client) {Client Applications\\AICS Clients};
+    \node[box, fill=green!20, below=of client] (adapter) {AICS Adapter Layer\\API Compatibility | Request Router};
+    \node[box, fill=orange!20, below left=of adapter, xshift=-2cm] (aics) {AICS Legacy System\\Existing Models | Policies};
+    \node[box, fill=purple!20, below right=of adapter, xshift=2cm] (ucsp) {UCSP Core\\Unified Interface | Smart Routing};
+    \node[box, fill=cyan!20, below=of adapter, yshift=-2cm] (unified) {Unified Decision Engine\\Result Fusion | Policy Evaluation};
+    \node[box, fill=red!20, below=of unified] (metrics) {Unified Metrics\\AICS Metrics | UCSP Metrics};
+    
+    \draw[arrow] (client) -- (adapter);
+    \draw[arrow] (adapter) -- (aics);
+    \draw[arrow] (adapter) -- (ucsp);
+    \draw[arrow] (aics) -- (unified);
+    \draw[arrow] (ucsp) -- (unified);
+    \draw[arrow] (unified) -- (metrics);
+\end{tikzpicture}
+\caption{AICS集成UCSP架构}
+\label{fig:aics-integration}
+\end{figure}
+
+\subsection{适配器层设计}
+
+\textbf{AICS适配器（AICS Adapter）职责：}
+\begin{itemize}
+    \item API兼容：将AICS原有API调用转换为UCSP统一接口
+    \item 请求路由：根据配置将请求路由到AICS或UCSP
+    \item 结果转换：将UCSP结果转换为AICS格式，保持兼容性
+    \item 双路验证：在迁移阶段同时调用AICS和UCSP，对比结果
+\end{itemize}
+
+\textbf{适配器配置结构：}
+
+\begin{lstlisting}[style=pseudocode, caption=AICS适配器配置]
+STRUCT AICSAdapterConfig:
+    adapter_id: UINT64
+    aics_endpoint: STRING              // AICS服务端点
+    ucsp_endpoint: STRING              // UCSP服务端点
+    routing_mode: ENUM                 // 路由模式
+        VALUES: [LEGACY_ONLY, UCSP_ONLY, DUAL_PATH, GRAYSCALE]
+    grayscale_ratio: FLOAT          // 灰度比例（当模式为GRAYSCALE时）
+    enable_dual_verification: BOOLEAN  // 是否启用双路验证
+    result_fusion_strategy: ENUM   // 结果融合策略
+        VALUES: [AICS_PRIORITY, UCSP_PRIORITY, CONSENSUS, CONFIDENCE_BASED]
+    compatibility_mode: BOOLEAN     // 兼容模式：保持AICS响应格式
+END STRUCT
+\end{lstlisting}
+
+\textbf{适配器路由算法：}
+
+\begin{algorithm}[H]
+\caption{AICS适配器路由算法}
+\begin{algorithmic}[1]
+\STATE 输入：AICS请求 $aics\_request$，适配器配置 $config$
+\STATE 输出：安全检查响应 $response$
+\STATE
+\STATE // 根据路由模式决定处理路径
+\IF{$config.routing\_mode == LEGACY\_ONLY$}
+    \STATE $result \leftarrow CallAICS(aics\_request, config.aics\_endpoint)$
+    \RETURN $ConvertToAICSFormat(result)$
+\ELSIF{$config.routing\_mode == UCSP\_ONLY$}
+    \STATE $ucsp\_request \leftarrow ConvertToUCSPFormat(aics\_request)$
+    \STATE $result \leftarrow CallUCSP(ucsp\_request, config.ucsp\_endpoint)$
+    \RETURN $ConvertToAICSFormat(result)$
+\ELSIF{$config.routing\_mode == DUAL\_PATH$}
+    \STATE // 双路验证：同时调用AICS和UCSP
+    \STATE $aics\_result \leftarrow CallAICS(aics\_request, config.aics\_endpoint)$
+    \STATE $ucsp\_request \leftarrow ConvertToUCSPFormat(aics\_request)$
+    \STATE $ucsp\_result \leftarrow CallUCSP(ucsp\_request, config.ucsp\_endpoint)$
+    \STATE $final\_result \leftarrow FuseResults(aics\_result, ucsp\_result, config)$
+    \STATE $RecordComparison(aics\_result, ucsp\_result)$
+    \RETURN $ConvertToAICSFormat(final\_result)$
+\ELSIF{$config.routing\_mode == GRAYSCALE$}
+    \STATE // 灰度发布：基于用户ID路由
+    \STATE $user\_id \leftarrow ExtractUserID(aics\_request)$
+    \STATE $hash \leftarrow MurmurHash3(user\_id \oplus config.adapter\_id)$
+    \STATE $bucket \leftarrow hash \bmod 10000$
+    \STATE $threshold \leftarrow config.grayscale\_ratio \times 10000$
+    \IF{$bucket < threshold$}
+        \STATE // 走UCSP路径
+        \STATE $ucsp\_request \leftarrow ConvertToUCSPFormat(aics\_request)$
+        \STATE $result \leftarrow CallUCSP(ucsp\_request, config.ucsp\_endpoint)$
+        \IF{$config.enable\_dual\_verification$}
+            \STATE $aics\_result \leftarrow CallAICS(aics\_request, config.aics\_endpoint)$
+            \STATE $RecordComparison(aics\_result, result)$
+        \ENDIF
+    \ELSE
+        \STATE // 走AICS路径
+        \STATE $result \leftarrow CallAICS(aics\_request, config.aics\_endpoint)$
+    \ENDIF
+    \RETURN $ConvertToAICSFormat(result)$
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{结果融合策略}
+
+\textbf{结果融合算法：}
+
+\begin{algorithm}[H]
+\caption{AICS与UCSP结果融合算法}
+\begin{algorithmic}[1]
+\STATE 输入：AICS结果 $aics\_result$，UCSP结果 $ucsp\_result$，融合策略 $strategy$
+\STATE 输出：融合后的结果 $fused\_result$
+\STATE
+\IF{$strategy == AICS\_PRIORITY$}
+    \STATE // AICS优先：仅在AICS不确定时使用UCSP结果
+    \IF{$aics\_result.confidence < UNCERTAIN\_THRESHOLD$}
+        \RETURN $ucsp\_result$
+    \ELSE
+        \RETURN $aics\_result$
+    \ENDIF
+\ELSIF{$strategy == UCSP\_PRIORITY$}
+    \STATE // UCSP优先：仅在UCSP不确定时使用AICS结果
+    \IF{$ucsp\_result.confidence < UNCERTAIN\_THRESHOLD$}
+        \RETURN $aics\_result$
+    \ELSE
+        \RETURN $ucsp\_result$
+    \ENDIF
+\ELSIF{$strategy == CONSENSUS$}
+    \STATE // 共识策略：两者都拦截或都放行时采用，否则采用更严格的结果
+    \IF{$aics\_result.blocked == ucsp\_result.blocked$}
+        \RETURN $aics\_result$  \COMMENT{一致时采用AICS结果保持兼容}
+    \ELSE
+        \STATE // 不一致时，采用更严格的结果（拦截优先）
+        \IF{$aics\_result.blocked$}
+            \RETURN $aics\_result$
+        \ELSE
+            \RETURN $ucsp\_result$
+        \ENDIF
+    \ENDIF
+\ELSIF{$strategy == CONFIDENCE\_BASED$}
+    \STATE // 置信度策略：选择置信度更高的结果
+    \IF{$aics\_result.confidence > ucsp\_result.confidence$}
+        \RETURN $aics\_result$
+    \ELSE
+        \RETURN $ucsp\_result$
+    \ENDIF
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{数据迁移方案}
+
+\textbf{迁移策略：}
+
+\begin{algorithm}[H]
+\caption{AICS数据迁移流程}
+\begin{algorithmic}[1]
+\STATE 输入：AICS数据源 $aics\_data$
+\STATE
+\STATE // 阶段1：数据导出
+\STATE $exported\_data \leftarrow ExportAICSData(aics\_data)$
+\STATE $ValidateDataFormat(exported\_data)$
+\STATE
+\STATE // 阶段2：数据转换
+\STATE $converted\_data \leftarrow ConvertToUCSPFormat(exported\_data)$
+\STATE $ValidateUCSPFormat(converted\_data)$
+\STATE
+\STATE // 阶段3：数据导入（分批进行）
+\STATE $batches \leftarrow SplitIntoBatches(converted\_data, BATCH\_SIZE)$
+\FOR{$batch$ IN $batches$}
+    \STATE $ImportToUCSP(batch)$
+    \STATE $VerifyImport(batch)$
+    \IF{NOT $VerifyImport(batch)$}
+        \STATE $RollbackBatch(batch)$
+        \STATE $LogError("Batch import failed", batch)$
+    \ENDIF
+\ENDFOR
+\STATE
+\STATE // 阶段4：数据一致性验证
+\STATE $VerifyDataConsistency(aics\_data, ucsp\_data)$
+\STATE
+\STATE // 阶段5：切换流量
+\STATE $SwitchTrafficToUCSP()$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{配置迁移：}
+
+\begin{algorithm}[H]
+\caption{AICS配置迁移算法}
+\begin{algorithmic}[1]
+\STATE 输入：AICS配置 $aics\_config$
+\STATE 输出：UCSP配置 $ucsp\_config$
+\STATE
+\STATE // 模型配置迁移
+\STATE $ucsp\_config.fast\_model \leftarrow MapAICSModel(aics\_config.primary\_model)$
+\STATE $ucsp\_config.deep\_model \leftarrow MapAICSModel(aics\_config.fallback\_model)$
+\STATE
+\STATE // 策略配置迁移
+\STATE $ucsp\_config.policy \leftarrow ConvertAICSPolicy(aics\_config.policy)$
+\STATE
+\STATE // 阈值配置迁移
+\STATE $ucsp\_config.block\_threshold \leftarrow aics\_config.block\_threshold$
+\STATE $ucsp\_config.warn\_threshold \leftarrow aics\_config.warn\_threshold$
+\STATE
+\STATE // 验证配置有效性
+\STATE $ValidateUCSPConfig(ucsp\_config)$
+\RETURN $ucsp\_config$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{渐进式迁移方案}
+
+\textbf{迁移阶段规划：}
+
+\begin{enumerate}
+    \item \textbf{阶段1：影子模式（Shadow Mode）}
+    \begin{itemize}
+        \item 所有请求走AICS，同时异步调用UCSP
+        \item 对比AICS和UCSP结果，收集差异数据
+        \item 评估UCSP性能和准确性
+        \item 持续时间：2-4周
+    \end{itemize}
+    
+    \item \textbf{阶段2：小流量验证（1\%-5\%）}
+    \begin{itemize}
+        \item 1\%流量走UCSP，99\%走AICS
+        \item 双路验证，确保结果一致性
+        \item 监控UCSP稳定性指标
+        \item 持续时间：2-3周
+    \end{itemize}
+    
+    \item \textbf{阶段3：逐步增加（5\%-50\%）}
+    \begin{itemize}
+        \item 每周增加5-10\%流量
+        \item 持续监控和调整
+        \item 处理发现的问题
+        \item 持续时间：6-8周
+    \end{itemize}
+    
+    \item \textbf{阶段4：全量切换（50\%-100\%）}
+    \begin{itemize}
+        \item 逐步增加到100\%
+        \item AICS作为兜底备用
+        \item 最终完全切换到UCSP
+        \item 持续时间：4-6周
+    \end{itemize}
+\end{enumerate}
+
+\textbf{迁移监控指标：}
+
+\begin{algorithm}[H]
+\caption{迁移监控算法}
+\begin{algorithmic}[1]
+\STATE 输入：迁移配置 $migration\_config$
+\STATE
+\STATE // 实时监控指标
+\STATE $metrics \leftarrow GetMigrationMetrics(migration\_config)$
+\STATE
+\STATE // 一致性指标
+\STATE $agreement\_rate \leftarrow CalculateAgreementRate(metrics.aics\_results, metrics.ucsp\_results)$
+\STATE
+\STATE // 性能指标
+\STATE $ucsp\_latency \leftarrow CalculateAverageLatency(metrics.ucsp\_requests)$
+\STATE $aics\_latency \leftarrow CalculateAverageLatency(metrics.aics\_requests)$
+\STATE
+\STATE // 准确性指标
+\STATE $ucsp\_accuracy \leftarrow CalculateAccuracy(metrics.ucsp\_results, metrics.ground\_truth)$
+\STATE $aics\_accuracy \leftarrow CalculateAccuracy(metrics.aics\_results, metrics.ground\_truth)$
+\STATE
+\STATE // 决策：是否继续迁移
+\IF{$agreement\_rate > MIN\_AGREEMENT\_RATE$ AND 
+    $ucsp\_latency < LATENCY\_THRESHOLD$ AND
+    $ucsp\_accuracy \geq aics\_accuracy$}
+    \STATE $IncreaseMigrationRatio(migration\_config)$
+\ELSE
+    \STATE $PauseMigration(migration\_config)$
+    \STATE $TriggerAlert("Migration paused due to metrics degradation")$
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{统一监控与可观测性}
+
+\textbf{统一指标聚合：}
+
+\begin{algorithm}[H]
+\caption{统一指标聚合算法}
+\begin{algorithmic}[1]
+\STATE 输入：AICS指标 $aics\_metrics$，UCSP指标 $ucsp\_metrics$
+\STATE 输出：统一指标 $unified\_metrics$
+\STATE
+\STATE // 聚合请求量
+\STATE $unified\_metrics.total\_requests \leftarrow aics\_metrics.requests + ucsp\_metrics.requests$
+\STATE
+\STATE // 聚合拦截量
+\STATE $unified\_metrics.total\_blocked \leftarrow aics\_metrics.blocked + ucsp\_metrics.blocked$
+\STATE
+\STATE // 计算平均延迟（加权平均）
+\STATE $aics\_weight \leftarrow aics\_metrics.requests / unified\_metrics.total\_requests$
+\STATE $ucsp\_weight \leftarrow ucsp\_metrics.requests / unified\_metrics.total\_requests$
+\STATE $unified\_metrics.avg\_latency \leftarrow aics\_weight \times aics\_metrics.avg\_latency + ucsp\_weight \times ucsp\_metrics.avg\_latency$
+\STATE
+\STATE // 聚合错误率
+\STATE $unified\_metrics.error\_rate \leftarrow (aics\_metrics.errors + ucsp\_metrics.errors) / unified\_metrics.total\_requests$
+\STATE
+\STATE // 计算迁移进度
+\STATE $unified\_metrics.migration\_progress \leftarrow ucsp\_metrics.requests / unified\_metrics.total\_requests$
+\STATE
+\RETURN $unified\_metrics$
+\end{algorithmic}
+\end{algorithm}
+
 \section{性能优化}
 
 \subsection{缓存策略}
@@ -985,8 +1312,10 @@ END STRUCT
     \item \textbf{科学验证：} 确定性 A/B 测试框架，支持策略科学验证
     \item \textbf{可追溯性：} 策略版本管理，所有变更可追溯
     \item \textbf{可扩展性：} 模块化设计，易于扩展新功能
+    \item \textbf{平滑迁移：} 灰度发布策略，支持从Vendor逐步切换到自研系统
+    \item \textbf{向后兼容：} AICS集成设计，实现现有系统平滑迁移，保持业务连续性
 \end{enumerate}
 
-该架构为构建企业级内容安全平台提供了坚实的技术基础。
+该架构为构建企业级内容安全平台提供了坚实的技术基础，同时支持从现有系统（如AICS）平滑迁移，降低了系统升级的风险和成本。
 
 \end{document}
